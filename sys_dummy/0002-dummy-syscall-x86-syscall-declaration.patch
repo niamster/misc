@@ -1,0 +1,31 @@
+Subject: [PATCH 2/3] [dummy][syscall] x86 syscall declaration
+
+---
+ arch/x86/include/asm/unistd_32.h   |    1 +
+ arch/x86/kernel/syscall_table_32.S |    1 +
+ 2 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/arch/x86/include/asm/unistd_32.h b/arch/x86/include/asm/unistd_32.h
+index beb9b5f..b5a6156 100644
+--- a/arch/x86/include/asm/unistd_32.h
++++ b/arch/x86/include/asm/unistd_32.h
+@@ -343,6 +343,7 @@
+ #define __NR_rt_tgsigqueueinfo	335
+ #define __NR_perf_event_open	336
+ #define __NR_recvmmsg		337
++#define __NR_dummy		338
+ 
+ #ifdef __KERNEL__
+ 
+diff --git a/arch/x86/kernel/syscall_table_32.S b/arch/x86/kernel/syscall_table_32.S
+index 8b37293..9e9ec72 100644
+--- a/arch/x86/kernel/syscall_table_32.S
++++ b/arch/x86/kernel/syscall_table_32.S
+@@ -337,3 +337,4 @@ ENTRY(sys_call_table)
+ 	.long sys_rt_tgsigqueueinfo	/* 335 */
+ 	.long sys_perf_event_open
+ 	.long sys_recvmmsg
++	.long sys_dummy
+-- 
+1.7.1
+
