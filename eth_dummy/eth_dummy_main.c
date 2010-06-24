@@ -28,6 +28,8 @@ struct eth_dummy_device {
     spinlock_t lock;
 };
 
+static struct net_device *eth_dummy_dev;
+
 static int eth_dummy_open(struct net_device *dev);
 static int eth_dummy_close(struct net_device *dev);
 static /* netdev_tx_t */ int eth_dummy_start_xmit(struct sk_buff *skb, struct net_device *dev);
@@ -155,12 +157,13 @@ static void eth_dummy_tx_timeout(struct net_device *dev)
 
 	/* Try to restart the device. Perhaps the user has fixed something. */
 
+
 	netif_wake_queue(dev);
 }
 
 static int __init eth_dummy_init(void)
 {
-	struct net_device *dev;
+    struct net_device *dev;
 	struct eth_dummy_device *dummy;
     u8 hw_addr[ETH_ALEN] = ETH_DUMMY_HW_ADDR;
     int ret = 0;
@@ -186,7 +189,9 @@ static int __init eth_dummy_init(void)
 	if (ret)
 		goto free;
 
-	printk(KERN_INFO "%s: HW addr %02x:%02x:%02x:%02x:%02x:%02x\n",
+    eth_dummy_dev = dev;
+
+    printk(KERN_INFO "%s: HW addr %02x:%02x:%02x:%02x:%02x:%02x\n",
             dev->name,
             dev->dev_addr[0],
             dev->dev_addr[1],
@@ -198,13 +203,20 @@ static int __init eth_dummy_init(void)
     return 0;
 
  free:
-	free_netdev(dev);
+    free_netdev(dev);
 
     return ret;
 }
 
 static void __exit eth_dummy_exit(void)
 {
+    struct net_device *dev = eth_dummy_dev;
+
+    if (dev) {
+        unregister_netdev(dev);
+        free_netdev(dev);
+    }
+
     printk(KERN_INFO "eth dummy: exit\n");
 }
 
