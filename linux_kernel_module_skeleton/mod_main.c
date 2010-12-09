@@ -12,7 +12,6 @@
  *
  */
 
-#include <linux/utsrelease.h>
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
@@ -55,7 +54,6 @@ static int proc_info_read(char *page, char **start, off_t off,
         int count, int *eof, void *data)
 {
     DBG(2, KERN_DEBUG, "enter\n");
-    DBG(3, KERN_DEBUG, "Linux UTC: " UTS_RELEASE "\n");
     DBG(3, KERN_DEBUG, "Linux code: 0x%08X\n", LINUX_VERSION_CODE);
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,25)
     /* ... */
@@ -64,9 +62,9 @@ static int proc_info_read(char *page, char **start, off_t off,
     return 0;
 }
 
-int proc_init(struct kmodule *kmodule)
+int __init proc_init(struct kmodule *kmodule)
 {
-    if (enable_proc)
+    if (!enable_proc)
         return 0;
 
     DBG(2, KERN_DEBUG, "creating entities under /proc\n");
@@ -86,16 +84,18 @@ int proc_init(struct kmodule *kmodule)
     kmodule->proc_info->read_proc = proc_info_read;
     kmodule->proc_info->data = NULL;
 
+    return 0;
+
   out_release_dir:
     remove_proc_entry(PROC_DIR_NAME, NULL);
     kmodule->proc_dir = NULL;
   out:
-    return 0;
+    return -1;
 }
 
 void proc_deinit(struct kmodule *kmodule)
 {
-    if (enable_proc)
+    if (!enable_proc)
         return ;
 
     DBG(2, KERN_DEBUG, "removing entities under /proc\n");
