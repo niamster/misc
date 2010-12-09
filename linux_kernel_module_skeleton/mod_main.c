@@ -11,14 +11,102 @@
  * License.
  *
  */
+
 #include <linux/module.h>
+#include <linux/proc_fs.h>
+
+#ifndef CONFIG_PROC_FS
+#error Enable procfs support in kernel
+#endif
+
+#define PROC_DIR_NAME "kmodule"
+#define PROC_INFO_FILE_NAME "info"
+
+#define DEBUG 1
+
+#ifdef DEBUG
+static unsigned int debug_level = 0;
+module_param(debug_level, uint, S_IRUGO);
+#define DBG(level, kern_level, fmt, ...)                            \
+    do {                                                            \
+        if (level <= debug_level) {                                 \
+            printk(kern_level "kmodule[%s:%u]: " fmt,               \
+                    __func__, __LINE__,                             \
+                    ## __VA_ARGS__);                                \
+        }                                                           \
+    } while (0)
+#else
+#define DBG(...)
+#endif
+
+static unsigned int enable_proc = 1;
+module_param(enable_proc, uint, 0);
+
+struct kmodule {
+    struct proc_dir_entry *proc_dir;
+    struct proc_dir_entry *proc_info;
+};
+
+static struct kmodule kmodule;
+
+static int proc_info_read(char *page, char **start, off_t off,
+        int count, int *eof, void *data)
+{
+    DBG(2, KERN_DEBUG, "enter\n");
+
+    return 0;
+}
+
+int proc_init(struct kmodule *kmodule)
+{
+    if (enable_proc)
+        return 0;
+
+    DBG(2, KERN_DEBUG, "creating entities under /proc\n");
+    kmodule->proc_dir = proc_mkdir(PROC_DIR_NAME, NULL);
+    if (!kmodule->proc_dir) {
+        DBG(0, KERN_WARNING, "unable to create /proc/%s\n", PROC_DIR_NAME);
+        goto out;
+    }
+
+    kmodule->proc_info = create_proc_entry(PROC_INFO_FILE_NAME, S_IRUGO, kmodule->proc_dir);
+    if (!kmodule->proc_info) {
+        DBG(0, KERN_WARNING, "unable to create /proc/%s/%s\n", PROC_DIR_NAME, PROC_INFO_FILE_NAME);
+        goto out_release_dir;
+    }
+
+    DBG(2, KERN_DEBUG, "successfuly created /proc/%s/%s\n", PROC_DIR_NAME, PROC_INFO_FILE_NAME);
+    kmodule->proc_info->read_proc = proc_info_read;
+    kmodule->proc_info->data = NULL;
+
+  out_release_dir:
+    remove_proc_entry(PROC_DIR_NAME, NULL);
+    kmodule->proc_dir = NULL;
+  out:
+    return 0;
+}
+
+void proc_deinit(struct kmodule *kmodule)
+{
+    if (enable_proc)
+        return ;
+
+    DBG(2, KERN_DEBUG, "removing entities under /proc\n");
+    if (kmodule->proc_info)
+        remove_proc_entry(PROC_INFO_FILE_NAME, kmodule->proc_dir);
+    if (kmodule->proc_dir)
+        remove_proc_entry(PROC_DIR_NAME, NULL);
+}
 
 /*
  * This function is called at module load.
  */
 static int __init kmodule_init(void)
 {
-    printk(KERN_INFO "Kmodule init\n");
+    DBG(0, KERN_INFO, "Kmodule init\n");
+    DBG(1, KERN_DEBUG, "debug level %d\n", debug_level);
+
+    proc_init(&kmodule);
 
 	return 0;
 }
@@ -28,7 +116,9 @@ static int __init kmodule_init(void)
  */
 static void __exit kmodule_exit(void)
 {
-    printk(KERN_INFO "Kmodule exit\n");
+    proc_deinit(&kmodule);
+
+    DBG(0, KERN_INFO, "Kmodule exit\n");
 }
 
 /*
