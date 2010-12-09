@@ -17,6 +17,11 @@ index beb9b5f..b5a6156 100644
  
  #ifdef __KERNEL__
  
+-#define NR_syscalls 338
++#define NR_syscalls 339
+ 
+ #define __ARCH_WANT_IPC_PARSE_VERSION
+ #define __ARCH_WANT_OLD_READDIR
 diff --git a/arch/x86/kernel/syscall_table_32.S b/arch/x86/kernel/syscall_table_32.S
 index 8b37293..9e9ec72 100644
 --- a/arch/x86/kernel/syscall_table_32.S
