@@ -12,6 +12,8 @@
  *
  */
 
+#include <linux/utsrelease.h>
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 
@@ -53,6 +55,11 @@ static int proc_info_read(char *page, char **start, off_t off,
         int count, int *eof, void *data)
 {
     DBG(2, KERN_DEBUG, "enter\n");
+    DBG(3, KERN_DEBUG, "Linux UTC: " UTS_RELEASE "\n");
+    DBG(3, KERN_DEBUG, "Linux code: 0x%08X\n", LINUX_VERSION_CODE);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,25)
+    /* ... */
+#endif
 
     return 0;
 }
