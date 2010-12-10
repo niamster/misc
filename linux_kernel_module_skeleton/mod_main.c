@@ -27,7 +27,7 @@
 
 #ifdef DEBUG
 static unsigned int debug_level = 0;
-module_param(debug_level, uint, S_IRUGO);
+module_param(debug_level, uint, S_IRUGO|S_IWUSR);
 #define DBG(level, kern_level, fmt, ...)                            \
     do {                                                            \
         if (level <= debug_level) {                                 \
