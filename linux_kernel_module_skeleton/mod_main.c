@@ -15,13 +15,35 @@
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
+#include <linux/kobject.h>
 
 #ifndef CONFIG_PROC_FS
 #error Enable procfs support in kernel
 #endif
 
-#define PROC_DIR_NAME "kmodule"
-#define PROC_INFO_FILE_NAME "info"
+#define KOBJ_ATTR_INITIALIZER(_name)                \
+    ._name = {                                      \
+        .attr	= {                                 \
+            .name = __stringify(_name),             \
+            .mode = 0644,                           \
+        },                                          \
+        .show	= _name##_show,                     \
+        .store	= _name##_store,                    \
+    }
+
+static ssize_t sysfs_info_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf);
+static ssize_t sysfs_info_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t n);
+
+
+#define SYSFS_DIR               kmodule
+#define SYSFS_DIR_NAME          __stringify(kmodule)
+#define SYSFS_INFO_FILE         info
+#define SYSFS_INFO_FILE_NAME    __stringify(info)
+
+#define PROC_DIR            kmodule
+#define PROC_DIR_NAME       __stringify(PROC_DIR)
+#define PROC_INFO_FILE      info
+#define PROC_INFO_FILE_NAME __stringify(info)
 
 #define DEBUG 1
 
@@ -46,9 +68,14 @@ module_param(enable_proc, uint, 0);
 struct kmodule {
     struct proc_dir_entry *proc_dir;
     struct proc_dir_entry *proc_info;
+
+    struct kobject *sysfs_dir;
+    struct kobj_attribute sysfs_info;
 };
 
-static struct kmodule kmodule;
+static struct kmodule kmodule = {
+    KOBJ_ATTR_INITIALIZER(sysfs_info),
+};
 
 static int proc_info_read(char *page, char **start, off_t off,
         int count, int *eof, void *data)
@@ -62,7 +89,7 @@ static int proc_info_read(char *page, char **start, off_t off,
     return 0;
 }
 
-int __init proc_init(struct kmodule *kmodule)
+static int __init kmodule_proc_init(struct kmodule *kmodule)
 {
     if (!enable_proc)
         return 0;
@@ -93,7 +120,7 @@ int __init proc_init(struct kmodule *kmodule)
     return -1;
 }
 
-void proc_deinit(struct kmodule *kmodule)
+static void __exit kmodule_proc_deinit(struct kmodule *kmodule)
 {
     if (!enable_proc)
         return ;
@@ -105,6 +132,85 @@ void proc_deinit(struct kmodule *kmodule)
         remove_proc_entry(PROC_DIR_NAME, NULL);
 }
 
+static ssize_t sysfs_info_show(struct kobject *kobj,
+        struct kobj_attribute *attr,
+        char *buf)
+{
+    DBG(2, KERN_DEBUG, "enter\n");
+
+    return sprintf(buf, "debug level %d\n", debug_level);
+}
+
+static ssize_t	sysfs_info_store(struct kobject *kobj,
+        struct kobj_attribute *attr,
+        const char *buf, size_t n)
+{
+	int val;
+    DBG(2, KERN_DEBUG, "enter\n");
+
+	if (sscanf(buf, "%d", &val) == 1) {
+		debug_level = val;
+		return n;
+	}
+
+	return -EINVAL;
+}
+
+#ifdef SYSFS_GROUP
+static struct attribute *kmodule_attrs[] = {
+	&kmodule.sysfs_info.attr,
+	NULL,
+};
+
+static struct attribute_group kmodule_attr_group = {
+	.attrs = kmodule_attrs,
+};
+#endif
+
+static int __init kmodule_sysfs_init(struct kmodule *kmodule)
+{
+    int ret = -ENOMEM;
+
+	kmodule->sysfs_dir = kobject_create_and_add(SYSFS_DIR_NAME, kernel_kobj);
+	if (!kmodule->sysfs_dir) {
+        DBG(0, KERN_WARNING, "unable to create /sys/kernel/%s\n", SYSFS_DIR_NAME);
+        goto out;
+    }
+
+#ifdef SYSFS_GROUP
+    ret = sysfs_create_group(kmodule->sysfs_dir, &kmodule_attr_group);
+    if (ret) {
+        DBG(0, KERN_WARNING, "unable to create group /sys/kernel/%s/\n", SYSFS_DIR_NAME);
+        goto out_release_dir;
+    }
+    DBG(2, KERN_DEBUG, "successfuly created group in /sys/kernel/%s/\n", SYSFS_DIR_NAME);
+#else
+    ret = sysfs_create_file(kmodule->sysfs_dir, &kmodule->sysfs_info.attr);
+    if (ret) {
+        DBG(0, KERN_WARNING, "unable to create group /sys/kernel/%s/%s\n", SYSFS_DIR_NAME, SYSFS_INFO_FILE_NAME);
+        goto out_release_dir;
+    }
+    DBG(2, KERN_DEBUG, "successfuly created group in /sys/kernel/%s/%s\n", SYSFS_DIR_NAME, SYSFS_INFO_FILE_NAME);
+#endif
+
+    return 0;
+
+  out_release_dir:
+    kobject_put(kmodule->sysfs_dir);
+    kmodule->sysfs_dir = NULL;
+  out:
+    return ret;
+}
+
+static void __exit kmodule_sysfs_deinit(struct kmodule *kmodule)
+{
+    DBG(2, KERN_DEBUG, "removing entities under /sys/kernel\n");
+
+    if (kmodule->sysfs_dir) {
+        kobject_put(kmodule->sysfs_dir);
+    }
+}
+
 /*
  * This function is called at module load.
  */
@@ -113,7 +219,8 @@ static int __init kmodule_init(void)
     DBG(0, KERN_INFO, "Kmodule init\n");
     DBG(1, KERN_DEBUG, "debug level %d\n", debug_level);
 
-    proc_init(&kmodule);
+    kmodule_proc_init(&kmodule);
+    kmodule_sysfs_init(&kmodule);
 
 	return 0;
 }
@@ -123,7 +230,8 @@ static int __init kmodule_init(void)
  */
 static void __exit kmodule_exit(void)
 {
-    proc_deinit(&kmodule);
+    kmodule_proc_deinit(&kmodule);
+    kmodule_sysfs_deinit(&kmodule);
 
     DBG(0, KERN_INFO, "Kmodule exit\n");
 }
