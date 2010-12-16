@@ -52,6 +52,7 @@ module_param(debug_level, uint, S_IRUGO|S_IWUSR);
 
 struct sync {
     struct proc_dir_entry *proc_dir;
+
     struct mutex mutex;
     struct completion completion;
     struct semaphore sem;
@@ -69,8 +70,8 @@ static struct sync sync;
 static DEFINE_MUTEX(global_mutex);
 static DECLARE_COMPLETION(global_completion);
 static DEFINE_SEMAPHORE(global_sem);
-static DECLARE_RWSEM(global_rw_sem);
 static DECLARE_MUTEX(global_binary_sem);
+static DECLARE_RWSEM(global_rw_sem);
 static DEFINE_SEQLOCK(global_seqlock);
 static DEFINE_SPINLOCK(global_spinlock);
 static DEFINE_RWLOCK(global_rwlock);
@@ -83,12 +84,12 @@ struct sync_action {
 static void sync_wait_for_completion(void)
 {
     wait_for_completion(&sync.completion);
-    /* wait_for_completion_interruptible(&sync.completion); */
-    /* wait_for_completion_killable(&sync.completion); */
-    /* wait_for_completion_timeout(&sync.completion, jiffies + 1); */
-    /* wait_for_completion_interruptible_timeout(&sync.completion, jiffies + 1); */
-    /* wait_for_completion_killable_timeout(&sync.completion, jiffies + 1); */
-    /* try_wait_for_completion(&sync.completion); */
+    /* int res = wait_for_completion_interruptible(&sync.completion); */
+    /* int res = wait_for_completion_killable(&sync.completion); */
+    /* int res = wait_for_completion_timeout(&sync.completion, jiffies + 1); */
+    /* int res = wait_for_completion_interruptible_timeout(&sync.completion, jiffies + 1); */
+    /* int res = wait_for_completion_killable_timeout(&sync.completion, jiffies + 1); */
+    /* int res = try_wait_for_completion(&sync.completion); */
 }
 
 static void sync_complete(void)
@@ -116,9 +117,9 @@ static void sync_init_completion(void)
 static void sync_mutex(void)
 {
     mutex_lock(&sync.mutex);
-    /* mutex_lock_interruptible(&sync.mutex); */
-    /* mutex_lock_killable(&sync.mutex); */
-    /* mutex_trylock(&sync.mutex); */
+    /* int res = mutex_lock_interruptible(&sync.mutex); */
+    /* int res = mutex_lock_killable(&sync.mutex); */
+    /* int res = mutex_trylock(&sync.mutex); */
 
     {
         volatile unsigned short i;
@@ -140,10 +141,10 @@ static void sync_mutex_locked(void)
 static void sync_sem_down(void)
 {
     down(&sync.sem);
-    /* down_interruptible(&sync.sem); */
-    /* down_killable(&sync.sem); */
-    /* down_trylock(&sync.sem); */
-    /* down_timeout(&sync.sem, jiffies + 1); */
+    /* int res = down_interruptible(&sync.sem); */
+    /* int res = down_killable(&sync.sem); */
+    /* int res = down_trylock(&sync.sem); */
+    /* int res = down_timeout(&sync.sem, jiffies + 1); */
 }
 
 static void sync_sem_up(void)
@@ -154,7 +155,7 @@ static void sync_sem_up(void)
 static void sync_rwsem_read_down(void)
 {
     down_read(&sync.rw_sem);
-    /* down_read_trylock(&sync.rw_sem); */
+    /* int res = down_read_trylock(&sync.rw_sem); */
 }
 
 static void sync_rwsem_read_up(void)
@@ -165,7 +166,10 @@ static void sync_rwsem_read_up(void)
 static void sync_rwsem_write_down(void)
 {
     down_write(&sync.rw_sem);
-    /* down_write_trylock(&sync.rw_sem); */
+    /* int res = down_write_trylock(&sync.rw_sem); */
+
+    /* downgrade_write(&sync.rw_sem); */
+    /* up_read(&sync.rw_sem); */
 }
 
 static void sync_rwsem_write_up(void)
@@ -190,7 +194,7 @@ static void sync_seqlock_read(void)
 static void sync_seqlock_write(void)
 {
     write_seqlock(&sync.seqlock);
-    /* write_tryseqlock(&sync.seqlock); */
+    /* int res = write_tryseqlock(&sync.seqlock); */
 
     ++sync.seqlock_data;
 
@@ -203,8 +207,8 @@ static void sync_spinlock(void)
     /* spin_lock_irqsave(&sync.spinlock, flags); */
     /* spin_lock_irq(&sync.spinlock); */
     /* spin_lock_bh(&sync.spinlock); */
-    /* spin_trylock(&sync.spinlock); */
-    /* spin_trylock_bh(&sync.spinlock); */
+    /* int res = spin_trylock(&sync.spinlock); */
+    /* int res = spin_trylock_bh(&sync.spinlock); */
 
     {
         volatile unsigned short i;
@@ -244,7 +248,7 @@ static void sync_rwlock_write(void)
     /* write_lock_irqsave(&sync.rwlock, flags); */
     /* write_lock_irq(&sync.rwlock); */
     /* write_lock_bh(&sync.rwlock); */
-    /* write_trylock(&sync.rwlock); */
+    /* int res = write_trylock(&sync.rwlock); */
 
     ++sync.rwlock_data;
 
@@ -325,13 +329,13 @@ static int proc_ctrl_write(struct file *file, const char __user *buffer,
     int ret = count;
     int i;
 
-    kbuf = kmalloc(count, GFP_KERNEL);
+    kbuf = kmalloc(count+1, GFP_KERNEL);
     if (!kbuf)
         return -ENOMEM;
 
     if (copy_from_user(kbuf, buffer, count)) {
         ret = -EACCES;
-        goto out_free;
+        goto out;
     }
     kbuf[count] = 0x0;
 
@@ -344,11 +348,10 @@ static int proc_ctrl_write(struct file *file, const char __user *buffer,
         }
     }
 
+    kfree(kbuf);
+
   out:
     return ret;
-  out_free:
-    kfree(kbuf);
-    goto out;
 }
 
 static int __init sync_proc_init(struct sync *sync)
@@ -400,9 +403,9 @@ static int __init sync_init(void)
     DBG(0, KERN_INFO, "Sync init\n");
     DBG(1, KERN_DEBUG, "debug level %d\n", debug_level);
 
-    init_completion(&sync.completion);
-
     mutex_init(&sync.mutex);
+
+    init_completion(&sync.completion);
 
     /* init_MUTEX(&sync.sem); */
     /* init_MUTEX_LOCKED(&sync.sem); */
