@@ -218,7 +218,7 @@ static int proc_ctrl_write(struct file *file, const char __user *buffer,
     char *kbuf;
     int ret = count;
 
-    kbuf = kmalloc(count, GFP_KERNEL);
+    kbuf = kmalloc(count+1, GFP_KERNEL);
     if (!kbuf)
         return -ENOMEM;
 
