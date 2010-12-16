@@ -224,7 +224,7 @@ static int proc_ctrl_write(struct file *file, const char __user *buffer,
 
     if (copy_from_user(kbuf, buffer, count)) {
         ret = -EACCES;
-        goto out_free;
+        goto out;
     }
     kbuf[count] = 0x0;
 
@@ -239,10 +239,9 @@ static int proc_ctrl_write(struct file *file, const char __user *buffer,
     }
 
   out:
-    return ret;
-  out_free:
     kfree(kbuf);
-    goto out;
+
+    return ret;
 }
 
 static int __init faulty_proc_init(struct faulty *faulty)
