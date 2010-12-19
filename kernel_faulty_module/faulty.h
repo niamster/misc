@@ -21,5 +21,5 @@ void faulty_printk_storm(void);
 typedef void (* faulty_funct_t)(void);
 
 int faulty_register(const char *name, faulty_funct_t faulty);
-void faulty_unregister(const char *name);
-void faulty_unregister_all(void);
+int faulty_unregister(const char *name);
+int faulty_unregister_all(void);

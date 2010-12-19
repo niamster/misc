@@ -17,6 +17,8 @@
 #include <linux/list.h>
 #include <linux/proc_fs.h>
 #include <linux/debugfs.h>
+#include <linux/rwsem.h>
+#include <linux/rwlock.h>
 #include <linux/seq_file.h>
 
 #include "faulty.h"
@@ -32,8 +34,8 @@
 #define PROC_INFO_FILE      info
 #define PROC_INFO_FILE_NAME __stringify(PROC_INFO_FILE)
 
-#define DEBUGFS_DIR            faulty
-#define DEBUGFS_DIR_NAME       __stringify(DEBUGFS_DIR)
+#define DEBUGFS_DIR         faulty
+#define DEBUGFS_DIR_NAME    __stringify(DEBUGFS_DIR)
 
 #define DEBUG 1
 
@@ -56,15 +58,21 @@ struct faulty_func {
     struct list_head list;
     char *name;
     faulty_funct_t f;
+
     unsigned int called;
+    unsigned int users;
+    rwlock_t rwlock;
 };
 
 struct faulty {
     struct proc_dir_entry *proc_dir;
     struct dentry *debugfs_dir;
 
-    struct list_head functions;
-    unsigned int functions_num;
+    struct {
+        struct list_head list;
+        unsigned int num;
+        struct rw_semaphore rw_sem;
+    } functions;
 };
 
 static struct faulty faulty;
@@ -83,46 +91,74 @@ int faulty_register(const char *name, faulty_funct_t f)
     memcpy(func->name, name, name_len);
     func->f = f;
     func->called = 0;
+    func->users = 0;
+    rwlock_init(&func->rwlock);
 
-    list_add_tail(&func->list, &faulty.functions);
-    ++faulty.functions_num;
+    down_write(&faulty.functions.rw_sem);
+    list_add_tail(&func->list, &faulty.functions.list);
+    ++faulty.functions.num;
+    up_write(&faulty.functions.rw_sem);
 
     return 0;
 }
 EXPORT_SYMBOL_GPL(faulty_register);
 
-void faulty_unregister(const char *name)
+int faulty_unregister(const char *name)
 {
-    struct faulty_func *func;
-    list_for_each_entry(func, &faulty.functions, list) {
+    struct faulty_func *func = NULL;
+    int ret = 0;
+
+    down_write(&faulty.functions.rw_sem);
+    list_for_each_entry(func, &faulty.functions.list, list) {
         if (!strcmp(func->name, name)) {
+            if (func->users) {
+                ret = -EBUSY;
+                break;
+            }
+
             list_del(&func->list);
-            --faulty.functions_num;
             kfree(func);
+            --faulty.functions.num;
 
             break;
         }
     }
+    up_write(&faulty.functions.rw_sem);
+
+    return ret;
 }
 EXPORT_SYMBOL_GPL(faulty_unregister);
 
-void faulty_unregister_all(void)
+int faulty_unregister_all(void)
 {
     struct faulty_func *func, *n;
-    list_for_each_entry_safe(func, n, &faulty.functions, list) {
+    int ret = 0;
+
+    down_write(&faulty.functions.rw_sem);
+    list_for_each_entry_safe(func, n, &faulty.functions.list, list) {
+        if (func->users) {
+            ret = -EBUSY;
+            continue;
+        }
+
         list_del(&func->list);
-        --faulty.functions_num;
         kfree(func);
+        --faulty.functions.num;
     }
+    up_write(&faulty.functions.rw_sem);
+
+    return ret;
 }
 EXPORT_SYMBOL_GPL(faulty_unregister_all);
 
 static void *proc_info_seq_start(struct seq_file *f, loff_t *pos)
 {
-    if (*pos >= faulty.functions_num)
+    down_read(&faulty.functions.rw_sem);
+
+    if (*pos >= faulty.functions.num)
         return NULL;
 
-    return list_first_entry(&faulty.functions, struct faulty_func, list);
+    return list_first_entry(&faulty.functions.list, struct faulty_func, list);
 }
 
 static void *proc_info_seq_next(struct seq_file *f, void *v, loff_t *pos)
@@ -130,7 +166,7 @@ static void *proc_info_seq_next(struct seq_file *f, void *v, loff_t *pos)
     struct faulty_func *func = (struct faulty_func *)v;
 
 	++(*pos);
-	if (*pos >= faulty.functions_num)
+	if (*pos >= faulty.functions.num)
 		return NULL;
 
     return list_entry(func->list.next, struct faulty_func, list);
@@ -138,14 +174,19 @@ static void *proc_info_seq_next(struct seq_file *f, void *v, loff_t *pos)
 
 static void proc_info_seq_stop(struct seq_file *f, void *v)
 {
-	/* Nothing to do */
+    up_read(&faulty.functions.rw_sem);
 }
 
 static int proc_info_seq_show(struct seq_file *f, void *v)
 {
     struct faulty_func *func = (struct faulty_func *)v;
+    unsigned int called;
 
-    return seq_printf(f, "%s: %u\n", func->name, func->called);
+    read_lock(&func->rwlock);
+    called = func->called;
+    read_unlock(&func->rwlock);
+
+    return seq_printf(f, "%s: called %u times\n", func->name, called);
 }
 
 static const struct seq_operations proc_info_seq_ops = {
@@ -167,7 +208,6 @@ static struct file_operations proc_info_operations = {
     .release	= seq_release,
 };
 
-
 /* Using method (1) described in fs/proc/generic.c to return data */
 static int proc_ctrl_read(char *page, char **start, off_t off,
         int count, int *eof, void *data)
@@ -188,20 +228,24 @@ static int proc_ctrl_read(char *page, char **start, off_t off,
         ++step, ++skip;
     }
 
-    list_for_each_entry(func, &faulty.functions, list) {
+    down_read(&faulty.functions.rw_sem);
+    list_for_each_entry(func, &faulty.functions.list, list) {
         if (step > skip) {
             ++skip;
             continue;
         }
 
-        if (strlen(func->name) + 2/* + '\n\0' */ > count)
+        if (strlen(func->name) + 2/* + '\n\0' */ > count) {
+            up_read(&faulty.functions.rw_sem);
             goto out;
+        }
 
         n = snprintf(page+written, count, "%s\n", func->name);
         written += n, count -= n;
 
         ++step, ++skip;
     }
+    up_read(&faulty.functions.rw_sem);
 
     *eof = 1;
 
@@ -214,9 +258,9 @@ static int proc_ctrl_read(char *page, char **start, off_t off,
 static int proc_ctrl_write(struct file *file, const char __user *buffer,
         unsigned long count, void *data)
 {
-    struct faulty_func *func;
+    struct faulty_func *func = NULL;
     char *kbuf;
-    int ret = count;
+    int ret = count, found = 0;
 
     kbuf = kmalloc(count+1, GFP_KERNEL);
     if (!kbuf)
@@ -228,14 +272,32 @@ static int proc_ctrl_write(struct file *file, const char __user *buffer,
     }
     kbuf[count] = 0x0;
 
-    list_for_each_entry(func, &faulty.functions, list) {
+    down_read(&faulty.functions.rw_sem);
+    list_for_each_entry(func, &faulty.functions.list, list) {
         if (!strcmp(func->name, kbuf)) {
-            DBG(2, KERN_DEBUG, "calling %s\n", func->name);
-            ++func->called;
-            func->f();
+            write_lock(&func->rwlock);
+            ++func->users;
+            write_unlock(&func->rwlock);
+
+            found = 1;
 
             break;
         }
+    }
+    up_read(&faulty.functions.rw_sem);
+
+    if (found) {
+        write_lock(&func->rwlock);
+        ++func->called;
+        write_unlock(&func->rwlock);
+
+        DBG(2, KERN_DEBUG, "calling %s\n", func->name);
+
+        func->f();
+
+        write_lock(&func->rwlock);
+        --func->users;
+        write_unlock(&func->rwlock);
     }
 
   out:
@@ -335,7 +397,8 @@ static int __init faulty_init(void)
     DBG(0, KERN_INFO, "Faulty init\n");
     DBG(1, KERN_DEBUG, "debug level %d\n", debug_level);
 
-    INIT_LIST_HEAD(&faulty.functions);
+    INIT_LIST_HEAD(&faulty.functions.list);
+    init_rwsem(&faulty.functions.rw_sem);
 
     faulty_register("branch through zero", faulty_branch_through_zero);
     faulty_register("null dereference", faulty_null_dereference);
