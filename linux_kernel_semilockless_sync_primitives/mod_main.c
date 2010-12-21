@@ -199,6 +199,7 @@ static void semilockless_sync_rcu_write(void)
 
     kfree(old_rcu_data);
 }
+
 static void semilockless_sync_rcu_list_read(void)
 {
     struct semilockless_rcu_list *entry;
@@ -257,12 +258,15 @@ static void semilockless_sync_rcu_list_replace(void)
 {
     struct semilockless_rcu_list *new, *old;
 
+    spin_lock(&semilockless_sync.rcu_lock);
     if (list_empty(&semilockless_sync.rcu_list)) {
+        spin_unlock(&semilockless_sync.rcu_lock);
         return;
     }
 
-    new = kmalloc(sizeof(struct semilockless_rcu_list), GFP_KERNEL);
+    new = kmalloc(sizeof(struct semilockless_rcu_list), GFP_ATOMIC);
     if (!new) {
+        spin_unlock(&semilockless_sync.rcu_lock);
         DBG(0, KERN_ERR, "Not able to allocate rcu list entry\n");
         return;
     }
@@ -271,10 +275,9 @@ static void semilockless_sync_rcu_list_replace(void)
 
     old = list_first_entry_rcu(&semilockless_sync.rcu_list, struct semilockless_rcu_list, list);
     list_replace_rcu(&old->list, &new->list);
+    spin_unlock(&semilockless_sync.rcu_lock);
 
-    synchronize_rcu();
-
-    kfree(old);
+    call_rcu(&old->rcu, semilockless_sync_rcu_list_reclaim);
 }
 
 static const struct semilockless_sync_action semilockless_sync_actions[] = {
