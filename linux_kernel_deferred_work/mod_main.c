@@ -18,6 +18,9 @@
 #include <linux/jiffies.h>
 #include <linux/sched.h>
 #include <linux/delay.h>
+#include <linux/timer.h>
+#include <linux/interrupt.h>
+#include <linux/kthread.h>
 #include <linux/proc_fs.h>
 
 #ifndef CONFIG_PROC_FS
@@ -46,15 +49,30 @@ module_param(debug_level, uint, S_IRUGO|S_IWUSR);
 #define DBG(...)
 #endif
 
+#define DEFERRED_WAIT_BIT       0
+#define DEFERRED_THREAD_BIT     1
+#define DEFERRED_THREAD_JOB_BIT 2
+
 struct deferred {
     struct proc_dir_entry *proc_dir;
+    unsigned long flags;
 
-    /* wait_queue_head_t wait_queue; */
-    unsigned long wait_flag;
+    wait_queue_head_t wait_queue;
+    struct timer_list timer;
+    struct tasklet_struct tasklet;
+    struct task_struct *thread;
 };
 
-static struct deferred deferred;
+void deferred_timer_function(unsigned long data);
+void deferred_tasklet_function(unsigned long data);
+
+static struct deferred deferred = {
+    .timer = TIMER_INITIALIZER(deferred_timer_function, 0, 0),
+};
+
 static DECLARE_WAIT_QUEUE_HEAD(global_wait_queue);
+static DEFINE_TIMER(global_timer, deferred_timer_function, 0, 1);
+static DECLARE_TASKLET/* _DISABLED */(global_tasklet, deferred_tasklet_function, 1);
 
 struct deferred_action {
     char *name;
@@ -163,7 +181,7 @@ static int deferred_wake_function(wait_queue_t *wait,
 	/*
 	 * Avoid a wakeup if event not interesting for us
 	 */
-	if (!test_bit(0, &deferred.wait_flag))
+	if (!test_bit(DEFERRED_WAIT_BIT, &deferred.flags))
 		return 0;
 
 	return autoremove_wake_function(wait, mode, sync, key);
@@ -175,22 +193,25 @@ static void deferred_wait(void)
     /* DEFINE_WAIT(wait, deferred_wake_function); */
     prepare_to_wait(&global_wait_queue, &wait, TASK_INTERRUPTIBLE);
     /* prepare_to_wait_exclusive(&global_wait_queue, &wait, TASK_INTERRUPTIBLE); */
+    DBG(1, KERN_DEBUG, "waiting for event #0\n");
     schedule();
     finish_wait(&global_wait_queue, &wait);
-    clear_bit(0, &deferred.wait_flag);
+    clear_bit(DEFERRED_WAIT_BIT, &deferred.flags);
 
-    wait_event(global_wait_queue, test_bit(0, &deferred.wait_flag));
-    clear_bit(0, &deferred.wait_flag);
-    /* wait_event_interruptible(global_wait_queue, test_bit(0, deferred.wait_flag)); */
-    /* wait_event_killable(global_wait_queue, test_bit(0, deferred.wait_flag)); */
-    /* wait_event_timeout(global_wait_queue, test_bit(0, deferred.wait_flag), jiffies + HZ); */
-    /* wait_event_interruptible_timeout(global_wait_queue, test_bit(0, deferred.wait_flag), jiffies + HZ); */
-    /* wait_event_interruptible_exclusive(global_wait_queue, test_bit(0, deferred.wait_flag)); */
+    DBG(1, KERN_DEBUG, "waiting for event #1\n");
+    wait_event(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, &deferred.flags));
+    clear_bit(DEFERRED_WAIT_BIT, &deferred.flags);
+    /* wait_event_interruptible(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags)); */
+    /* wait_event_killable(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags)); */
+    /* wait_event_timeout(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags), jiffies + HZ); */
+    /* wait_event_interruptible_timeout(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags), jiffies + HZ); */
+    /* wait_event_interruptible_exclusive(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags)); */
 }
 
 static void deferred_wake(void)
 {
-    set_bit(0, &deferred.wait_flag);
+    DBG(1, KERN_DEBUG, "waking up\n");
+    set_bit(DEFERRED_WAIT_BIT, &deferred.flags);
     wake_up(&global_wait_queue);
     /* wake_up_nr(&global_wait_queue, 1); */
     /* wake_up_all(&global_wait_queue); */
@@ -200,12 +221,168 @@ static void deferred_wake(void)
     /* wake_up_interruptible_sync(&global_wait_queue); */
 }
 
+void deferred_timer_function(unsigned long data)
+{
+    printk("%lu timer @ %lu jiffies\n", data, jiffies);
+}
+
+static void deferred_timer(void)
+{
+    DBG(1, KERN_DEBUG, "Setting timers @ %lu jiffies\n", jiffies);
+
+    if (timer_pending(&global_timer)) {
+        printk(KERN_INFO "timer pending\n");
+
+        mod_timer_pending(&global_timer, jiffies + HZ);
+    } else {
+        deferred.timer.expires = jiffies + HZ;
+        add_timer(&deferred.timer);
+        /* mod_timer(&global_timer, jiffies + 3*HZ); */
+    }
+
+    mod_timer(&deferred.timer, jiffies + 3*HZ);
+    /* add_timer_on(&deferred.timer, cpu); */
+}
+
+void deferred_tasklet_function(unsigned long data)
+{
+    printk("%lu tasklet @ %lu jiffies(in: irq %d, softirq %d, interrupt %d, atomic %d)\n",
+            data, jiffies, !!in_irq(), !!in_softirq(), !!in_interrupt(), !!in_atomic());
+}
+
+static void deferred_tasklet(void)
+{
+    tasklet_schedule(&deferred.tasklet);
+    tasklet_hi_schedule(&global_tasklet);
+}
+
+static void deferred_tasklet_enable(void)
+{
+    tasklet_enable(&global_tasklet);
+}
+
+static void deferred_tasklet_disable(void)
+{
+    tasklet_disable(&global_tasklet);
+    /* tasklet_disable_nosync(&global_tasklet); */
+}
+
+static int deferred_thread_function(void *data)
+{
+    DBG(2, KERN_DEBUG, "New thread started: pid %d, comm %s\n",
+            current->pid, current->comm);
+
+	/* Allow the thread to be killed by a signal, but set the signal mask
+	 * to block everything but INT, TERM and KILL */
+	allow_signal(SIGINT);
+	allow_signal(SIGTERM);
+	allow_signal(SIGKILL);
+
+	/* Allow the thread to be frozen */
+	set_freezable();
+
+    for (;;) {
+        set_current_state(TASK_INTERRUPTIBLE);
+
+        if (kthread_should_stop())
+            return 0;
+
+        if (try_to_freeze())
+            continue;
+
+		if (signal_pending(current)) {
+            siginfo_t info;
+            int sig;
+
+            sig = dequeue_signal_lock(current, &current->blocked, &info);
+            DBG(0, KERN_INFO, "Received %d signal. Exiting.\n", sig);
+
+            flush_signals(current);
+
+            clear_bit(DEFERRED_THREAD_BIT, &deferred.flags);
+
+			return -1;
+		}
+
+        if (test_bit(DEFERRED_THREAD_JOB_BIT, &deferred.flags)) {
+            __set_current_state(TASK_RUNNING);
+
+            DBG(0, KERN_INFO, "Doing interesting job\n");
+            clear_bit(DEFERRED_THREAD_JOB_BIT, &deferred.flags);
+
+            continue;
+        }
+
+        schedule();
+    }
+
+    return 0;
+}
+
+static void deferred_thread_start(void)
+{
+    if (test_bit(DEFERRED_THREAD_BIT, &deferred.flags))
+        return;
+
+    set_bit(DEFERRED_THREAD_BIT, &deferred.flags);
+
+    deferred.thread = kthread_create(deferred_thread_function, NULL, "deferred");
+    if (IS_ERR(deferred.thread)) {
+        DBG(0, KERN_ERR, "Unable to create new thread: %ld\n", PTR_ERR(deferred.thread));
+        clear_bit(DEFERRED_THREAD_BIT, &deferred.flags);
+        return;
+    }
+
+    /* kthread_bind(deferred.thread, cpu); */
+    DBG(1, KERN_INFO, "Starting new thread\n");
+    wake_up_process(deferred.thread);
+    DBG(2, KERN_DEBUG, "New thread started\n");
+
+    /* deferred.thread = kthread_run(deferred_thread_function, NULL, "deferred"); */
+    /* if (IS_ERR(deferred.thread)) { */
+    /*     DBG(0, KERN_ERR, "Unable to create new thread: %ld\n", PTR_ERR(deferred.thread)); */
+    /*     clear_bit(DEFERRED_THREAD_BIT, &deferred.flags); */
+    /*     return; */
+    /* } */
+}
+
+static void deferred_thread_stop(void)
+{
+    int ret;
+
+    if (!test_bit(DEFERRED_THREAD_BIT, &deferred.flags))
+        return;
+
+    DBG(2, KERN_DEBUG, "Stopping the thread\n");
+    ret = kthread_stop(deferred.thread);
+    clear_bit(DEFERRED_THREAD_BIT, &deferred.flags);
+    DBG(1, KERN_INFO, "The thread stopped: %d\n", ret);
+}
+
+static void deferred_thread_wakeup(void)
+{
+    if (!test_bit(DEFERRED_THREAD_BIT, &deferred.flags))
+        return;
+
+    set_bit(DEFERRED_THREAD_JOB_BIT, &deferred.flags);
+    DBG(2, KERN_DEBUG, "Waking up the thread\n");
+    wake_up_process(deferred.thread);
+    DBG(1, KERN_INFO, "The thread was woken up\n");
+}
+
 static const struct deferred_action deferred_actions[] = {
     {.name = "jiffies", .func = deferred_jiffies},
     {.name = "sleep", .func = deferred_sleep},
     {.name = "delay", .func = deferred_delay},
     {.name = "wait", .func = deferred_wait},
     {.name = "wake", .func = deferred_wake},
+    {.name = "timer", .func = deferred_timer},
+    {.name = "tasklet", .func = deferred_tasklet},
+    {.name = "tasklet enable", .func = deferred_tasklet_enable},
+    {.name = "tasklet disable", .func = deferred_tasklet_disable},
+    {.name = "thread start", .func = deferred_thread_start},
+    {.name = "thread stop", .func = deferred_thread_stop},
+    {.name = "thread wakeup", .func = deferred_thread_wakeup},
 };
 
 /* Using method (1) described in fs/proc/generic.c to return data */
@@ -332,8 +509,15 @@ static int __init deferred_init(void)
     DBG(0, KERN_INFO, "Deferred init\n");
     DBG(1, KERN_DEBUG, "debug level %d\n", debug_level);
 
-    deferred.wait_flag = 0;
-    /* init_waitqueue_head(&deferred.wait_queue); */
+    deferred.flags = 0;
+    init_waitqueue_head(&deferred.wait_queue);
+
+    setup_timer(&deferred.timer, deferred_timer_function, 0);
+    /* init_timer(&deferred.timer); */
+	/* deferred.timer.function = deferred_timer_function; */
+	/* deferred.timer.expires = jiffies; */
+
+    tasklet_init(&deferred.tasklet, deferred_tasklet_function, 0);
 
     deferred_proc_init(&deferred);
 
@@ -346,6 +530,12 @@ static int __init deferred_init(void)
 static void __exit deferred_exit(void)
 {
     deferred_proc_deinit(&deferred);
+
+    del_timer_sync(&deferred.timer);
+    /* del_timer(&deferred.timer); */
+
+    tasklet_kill(&deferred.tasklet);
+    tasklet_kill(&global_tasklet);
 
     DBG(0, KERN_INFO, "Deferred exit\n");
 }
