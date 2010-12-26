@@ -49,11 +49,12 @@ module_param(debug_level, uint, S_IRUGO|S_IWUSR);
 struct deferred {
     struct proc_dir_entry *proc_dir;
 
-    wait_queue_head_t wait_queue;
+    /* wait_queue_head_t wait_queue; */
+    unsigned long wait_flag;
 };
 
 static struct deferred deferred;
-static DECLARE_WAIT_QUEUE_HEAD(deferred_wait_queue);
+static DECLARE_WAIT_QUEUE_HEAD(global_wait_queue);
 
 struct deferred_action {
     char *name;
@@ -68,8 +69,8 @@ static void deferred_jiffies(void)
     struct timeval tv;
 
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, jiffies_64);
-    j = jiffies + 10*HZ;
-    while (time_after(jiffies, j));
+    j = jiffies + HZ;           /* 1 sec later */
+    while (time_after(j, jiffies));
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, get_jiffies_64());
 
     j = jiffies;
@@ -120,16 +121,16 @@ static void deferred_sleep(void)
     unsigned long mS;
 
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, jiffies_64);
-    j = jiffies + 10*HZ;
-    while (time_after(jiffies, j))
-    /* while (time_before(j, jiffies)) */
-    /* while (time_after_eq(jiffies, j)) */
-    /* while (time_before_eq(j, jiffies)) */
+    j = jiffies + HZ;           /* 1 sec later */
+    while (time_after(j, jiffies))
+    /* while (time_before(jiffies, j)) */
+    /* while (time_after_eq(j, jiffies)) */
+    /* while (time_before_eq(jiffies, j)) */
         cpu_relax();
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, get_jiffies_64());
 
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, jiffies_64);
-    j = jiffies + 10*HZ;
+    j = jiffies + HZ;           /* 1 sec later */
     while (time_after(jiffies, j))
     /* while (time_before(j, jiffies)) */
     /* while (time_after_eq(jiffies, j)) */
@@ -137,7 +138,7 @@ static void deferred_sleep(void)
         schedule();
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, get_jiffies_64());
 
-    j = jiffies + 10*HZ;
+    j = jiffies + HZ;           /* 1 sec later */
     /* set_current_state(TASK_INTERRUPTIBLE); */
     schedule_timeout(j);
     /* schedule_timeout_interruptible(j); */
@@ -156,19 +157,47 @@ static void deferred_delay(void)
     mdelay(100);
 }
 
+static int deferred_wake_function(wait_queue_t *wait,
+        unsigned mode, int sync, void *key)
+{
+	/*
+	 * Avoid a wakeup if event not interesting for us
+	 */
+	if (!test_bit(0, &deferred.wait_flag))
+		return 0;
+
+	return autoremove_wake_function(wait, mode, sync, key);
+}
+
 static void deferred_wait(void)
 {
-    DECLARE_WAITQUEUE(wait, current);
-
-    __set_current_state(TASK_UNINTERRUPTIBLE);
-    add_wait_queue(&deferred_wait_queue, &wait);
+    DEFINE_WAIT_FUNC(wait, deferred_wake_function);
+    /* DEFINE_WAIT(wait, deferred_wake_function); */
+    prepare_to_wait(&global_wait_queue, &wait, TASK_INTERRUPTIBLE);
+    /* prepare_to_wait_exclusive(&global_wait_queue, &wait, TASK_INTERRUPTIBLE); */
     schedule();
-    remove_wait_queue(&deferred_wait_queue, &wait);
+    finish_wait(&global_wait_queue, &wait);
+    clear_bit(0, &deferred.wait_flag);
+
+    wait_event(global_wait_queue, test_bit(0, &deferred.wait_flag));
+    clear_bit(0, &deferred.wait_flag);
+    /* wait_event_interruptible(global_wait_queue, test_bit(0, deferred.wait_flag)); */
+    /* wait_event_killable(global_wait_queue, test_bit(0, deferred.wait_flag)); */
+    /* wait_event_timeout(global_wait_queue, test_bit(0, deferred.wait_flag), jiffies + HZ); */
+    /* wait_event_interruptible_timeout(global_wait_queue, test_bit(0, deferred.wait_flag), jiffies + HZ); */
+    /* wait_event_interruptible_exclusive(global_wait_queue, test_bit(0, deferred.wait_flag)); */
 }
 
 static void deferred_wake(void)
 {
-    wake_up(&deferred_wait_queue);
+    set_bit(0, &deferred.wait_flag);
+    wake_up(&global_wait_queue);
+    /* wake_up_nr(&global_wait_queue, 1); */
+    /* wake_up_all(&global_wait_queue); */
+    /* wake_up_interruptible(&global_wait_queue); */
+    /* wake_up_interruptible_nr(&global_wait_queue, 1); */
+    /* wake_up_interruptible_all(&global_wait_queue); */
+    /* wake_up_interruptible_sync(&global_wait_queue); */
 }
 
 static const struct deferred_action deferred_actions[] = {
@@ -303,7 +332,8 @@ static int __init deferred_init(void)
     DBG(0, KERN_INFO, "Deferred init\n");
     DBG(1, KERN_DEBUG, "debug level %d\n", debug_level);
 
-    init_waitqueue_head(&deferred.wait_queue);
+    deferred.wait_flag = 0;
+    /* init_waitqueue_head(&deferred.wait_queue); */
 
     deferred_proc_init(&deferred);
 
