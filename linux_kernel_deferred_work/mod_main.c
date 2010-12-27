@@ -12,6 +12,7 @@
  *
  */
 
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/time.h>
@@ -20,7 +21,9 @@
 #include <linux/delay.h>
 #include <linux/timer.h>
 #include <linux/interrupt.h>
+#include <linux/freezer.h>
 #include <linux/kthread.h>
+#include <linux/workqueue.h>
 #include <linux/proc_fs.h>
 
 #ifndef CONFIG_PROC_FS
@@ -61,10 +64,17 @@ struct deferred {
     struct timer_list timer;
     struct tasklet_struct tasklet;
     struct task_struct *thread;
+    struct workqueue_struct *wq;
+    struct work_struct work;
+    struct delayed_work delayed_work;
 };
 
-void deferred_timer_function(unsigned long data);
-void deferred_tasklet_function(unsigned long data);
+static void deferred_timer_function(unsigned long data);
+static void deferred_tasklet_function(unsigned long data);
+static void deferred_work_function(struct work_struct *work);
+static void deferred_delayed_work_function(struct work_struct *work);
+static void deferred_global_work_function(struct work_struct *work);
+static void deferred_global_delayed_work_function(struct work_struct *work);
 
 static struct deferred deferred = {
     .timer = TIMER_INITIALIZER(deferred_timer_function, 0, 0),
@@ -73,6 +83,8 @@ static struct deferred deferred = {
 static DECLARE_WAIT_QUEUE_HEAD(global_wait_queue);
 static DEFINE_TIMER(global_timer, deferred_timer_function, 0, 1);
 static DECLARE_TASKLET/* _DISABLED */(global_tasklet, deferred_tasklet_function, 1);
+static DECLARE_WORK(global_work, deferred_global_work_function);
+static DECLARE_DELAYED_WORK(global_delayed_work, deferred_global_delayed_work_function);
 
 struct deferred_action {
     char *name;
@@ -221,7 +233,7 @@ static void deferred_wake(void)
     /* wake_up_interruptible_sync(&global_wait_queue); */
 }
 
-void deferred_timer_function(unsigned long data)
+static void deferred_timer_function(unsigned long data)
 {
     printk("%lu timer @ %lu jiffies\n", data, jiffies);
 }
@@ -244,7 +256,7 @@ static void deferred_timer(void)
     /* add_timer_on(&deferred.timer, cpu); */
 }
 
-void deferred_tasklet_function(unsigned long data)
+static void deferred_tasklet_function(unsigned long data)
 {
     printk("%lu tasklet @ %lu jiffies(in: irq %d, softirq %d, interrupt %d, atomic %d)\n",
             data, jiffies, !!in_irq(), !!in_softirq(), !!in_interrupt(), !!in_atomic());
@@ -370,6 +382,81 @@ static void deferred_thread_wakeup(void)
     DBG(1, KERN_INFO, "The thread was woken up\n");
 }
 
+static void deferred_work_function(struct work_struct *work)
+{
+    struct deferred *deferred = container_of(work, struct deferred, work);
+
+    printk("Work done for deferred 0x%08lX\n", (unsigned long)deferred);
+}
+
+static void deferred_global_work_function(struct work_struct *work)
+{
+    printk("Work done\n");
+}
+
+static void deferred_queue_work(void)
+{
+    int res;
+
+    res = queue_work(deferred.wq, &deferred.work);
+    /* res = queue_work_on(cpu, deferred.wq, &deferred.work); */
+    if (res == 0)
+        DBG(1, KERN_INFO, "Work was already enqueued\n");
+
+    if (work_pending(&global_work)) {
+        DBG(2, KERN_DEBUG, "Work is pending\n");
+    } else {
+        schedule_work(&global_work);
+        /* schedule_work_on(cpu, &global_work); */
+    }
+}
+
+static void deferred_cancel_work(void)
+{
+    cancel_work_sync(&deferred.work);
+    flush_work(&global_work);   /* Hoping that the caller won't re-arm work */
+}
+
+static void deferred_delayed_work_function(struct work_struct *work)
+{
+    struct delayed_work *delayed = to_delayed_work(work);
+    struct deferred *deferred = container_of(delayed, struct deferred, delayed_work);
+
+    printk("Delayed work done for deferred 0x%08lX\n", (unsigned long)deferred);
+}
+
+static void deferred_global_delayed_work_function(struct work_struct *work)
+{
+    printk("Delayed work done\n");
+}
+
+static void deferred_queue_delayed_work(void)
+{
+    int res;
+
+    res = queue_delayed_work(deferred.wq, &deferred.delayed_work, HZ);
+    /* res = queue_delayed_work_on(cpu, deferred.wq, &deferred.delayed_work, HZ); */
+    if (res == 0)
+        DBG(1, KERN_INFO, "Delayed work was already enqueued\n");
+
+    if (delayed_work_pending(&global_delayed_work)) {
+        DBG(2, KERN_DEBUG, "Delayed work is pending\n");
+    } else {
+        schedule_delayed_work(&global_delayed_work, HZ);
+        /* schedule_delayed_work_on(cpu, &global_delayed_work); */
+    }
+}
+
+static void deferred_cancel_delayed_work(void)
+{
+    cancel_delayed_work_sync(&deferred.delayed_work);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
+    flush_delayed_work(&global_delayed_work.work);  /* Hoping that the caller won't re-arm work */
+#else
+    cancel_delayed_work_sync(&deferred.delayed_work);
+#endif
+}
+
 static const struct deferred_action deferred_actions[] = {
     {.name = "jiffies", .func = deferred_jiffies},
     {.name = "sleep", .func = deferred_sleep},
@@ -383,6 +470,10 @@ static const struct deferred_action deferred_actions[] = {
     {.name = "thread start", .func = deferred_thread_start},
     {.name = "thread stop", .func = deferred_thread_stop},
     {.name = "thread wakeup", .func = deferred_thread_wakeup},
+    {.name = "queue work", .func = deferred_queue_work},
+    {.name = "cancel work", .func = deferred_cancel_work},
+    {.name = "queue delayed work", .func = deferred_queue_delayed_work},
+    {.name = "cancel delayed work", .func = deferred_cancel_delayed_work},
 };
 
 /* Using method (1) described in fs/proc/generic.c to return data */
@@ -501,6 +592,13 @@ static void __exit deferred_proc_deinit(struct deferred *deferred)
     }
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
+static void deferred_init_work_function(struct work_struct *work)
+{
+    printk("Delayed init work done on cpu %d\n", raw_smp_processor_id());
+}
+#endif
+
 /*
  * This function is called at module load.
  */
@@ -519,6 +617,21 @@ static int __init deferred_init(void)
 
     tasklet_init(&deferred.tasklet, deferred_tasklet_function, 0);
 
+    deferred.wq = create_workqueue("deferred-wq");
+    /* deferred.wq = create_freezeable_workqueue("deferred-wq"); */
+    /* deferred.wq = create_singlethread_workqueue("deferred-wq"); */
+    if (deferred.wq == NULL) {
+        DBG(0, KERN_ERR, "Unable to create WQ\n");
+        return -ENOMEM;
+    }
+
+    INIT_WORK(&deferred.work, deferred_work_function);
+    INIT_DELAYED_WORK(&deferred.delayed_work, deferred_delayed_work_function);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
+    schedule_on_each_cpu(deferred_init_work_function);
+#endif
+
     deferred_proc_init(&deferred);
 
 	return 0;
@@ -536,6 +649,14 @@ static void __exit deferred_exit(void)
 
     tasklet_kill(&deferred.tasklet);
     tasklet_kill(&global_tasklet);
+
+    flush_workqueue(deferred.wq);
+    destroy_workqueue(deferred.wq);
+
+    cancel_work_sync(&deferred.work);
+    cancel_delayed_work_sync(&deferred.delayed_work);
+
+    flush_scheduled_work();
 
     DBG(0, KERN_INFO, "Deferred exit\n");
 }
