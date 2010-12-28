@@ -453,7 +453,7 @@ static void deferred_cancel_delayed_work(void)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
     flush_delayed_work(&global_delayed_work.work);  /* Hoping that the caller won't re-arm work */
 #else
-    cancel_delayed_work_sync(&deferred.delayed_work);
+    cancel_delayed_work_sync(&global_delayed_work);
 #endif
 }
 
