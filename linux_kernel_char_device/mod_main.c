@@ -37,9 +37,6 @@ module_param(debug_level, uint, S_IRUGO|S_IWUSR);
 #define DBG(...)
 #endif
 
-static unsigned int enable_proc = 1;
-module_param(enable_proc, uint, 0);
-
 static unsigned int major = 0;
 module_param(major, uint, 0);
 
@@ -255,6 +252,7 @@ static int __init chardev_init(void)
             goto out;
         }
     }
+
     DBG(1, KERN_INFO, "Chardev region registered: %u major, %u minor\n",
             MAJOR(chardev.dev), MINOR(chardev.dev));
 
