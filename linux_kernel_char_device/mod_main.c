@@ -70,6 +70,8 @@ static int chardev_open(struct inode *inode, struct file *file)
 
     file->private_data = chardev.cbuffer;
 
+    try_module_get(THIS_MODULE);
+
     return 0;
 }
 
@@ -78,6 +80,8 @@ static int chardev_release(struct inode *inode, struct file *file)
     /* struct circ_buf *cbuffer = file->private_data; */
 
     DBG(2, KERN_DEBUG, "release\n");
+
+    module_put(THIS_MODULE);
 
 	return 0;
 }
