@@ -39,20 +39,21 @@ module_param(debug_level, uint, S_IRUGO|S_IWUSR);
 #define DBG(...)
 #endif
 
+#define HARD_SECTOR 512
+
 static unsigned int major = 0;
 module_param(major, uint, 0);
 
 static unsigned int minors = 1;
 module_param(minors, uint, 0);
 
-static unsigned int logical_block = PAGE_SIZE;
+static unsigned int logical_block = HARD_SECTOR;
 module_param(logical_block, uint, 0);
 
-static unsigned int sectors = 1024;
+static unsigned int sectors = 4096;
 module_param(sectors, uint, 0);
 
 struct blockdev {
-    dev_t dev;
     unsigned long size;
 	spinlock_t lock;
 	u8 *data;
@@ -87,16 +88,18 @@ static void blockdev_request(struct request_queue *q)
 
 	req = blk_fetch_request(q);
 	while (req != NULL) {
-		if (!blk_fs_request(req)) {
+        struct blockdev *dev;
+		if (req->cmd_type != REQ_TYPE_FS) {
             DBG(1, KERN_INFO, "Skip non-CMD request\n");
 			__blk_end_request_all(req, -EIO);
 			continue;
 		}
 
-		blockdev_transfer(&blockdev, blk_rq_pos(req), blk_rq_cur_sectors(req),
+        dev = (struct blockdev *)req->rq_disk->private_data;
+		blockdev_transfer(dev, blk_rq_pos(req), blk_rq_cur_sectors(req),
 				req->buffer, rq_data_dir(req));
 
-        if (! __blk_end_request_cur(req, 0) ) {
+        if (!__blk_end_request_cur(req, 0) ) {
 			req = blk_fetch_request(q);
 		}
 	}
@@ -109,13 +112,16 @@ static void blockdev_request(struct request_queue *q)
  */
 static int blockdev_getgeo(struct block_device *bd, struct hd_geometry *geo)
 {
+    struct blockdev *dev = (struct blockdev *)bd->bd_disk->private_data;
+    int size = dev->size * (1024 / HARD_SECTOR);
+
     DBG(2, KERN_DEBUG, "getgeo\n");
 
     /* We have no real geometry, of course, so make something up. */
-	geo->cylinders = get_capacity(bd->bd_disk) >> 11;
-	geo->heads = 1 << 6;
-	geo->sectors = 1 << 5;
+	geo->heads = 4;
+	geo->sectors = 16;
 	geo->start = 0;
+	geo->cylinders = size/(geo->heads * geo->sectors);
 
 	return 0;
 }
