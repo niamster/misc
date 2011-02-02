@@ -101,7 +101,7 @@ static ssize_t chardev_read(struct file *file, char __user *buf,
     cnt = circ_cnt(cbuffer);
 
 	if (*loff >= cnt)
-		return 0;
+		goto out;
 
 	if (*loff + count > cnt)
 		count = cnt - *loff;
