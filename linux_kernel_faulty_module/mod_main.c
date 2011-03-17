@@ -56,6 +56,7 @@ module_param(debug_level, uint, S_IRUGO|S_IWUSR);
 
 struct faulty_func {
     struct list_head list;
+    struct module *module;
     char *name;
     faulty_funct_t f;
 
@@ -77,16 +78,20 @@ struct faulty {
 
 static struct faulty faulty;
 
-int faulty_register(const char *name, faulty_funct_t f)
+int faulty_register(struct module *module, const char *name, faulty_funct_t f)
 {
     struct faulty_func *func;
     unsigned int name_len = strlen(name) + 1;
+
+    if (!try_module_get(module))
+        return -ENOSYS;
 
     func = kmalloc(sizeof(struct faulty_func) + name_len,
             GFP_KERNEL);
     if (!func)
         return -ENOMEM;
 
+    func->module = module;
     func->name = (char *)(func + 1);
     memcpy(func->name, name, name_len);
     func->f = f;
@@ -117,6 +122,7 @@ int faulty_unregister(const char *name)
             }
 
             list_del(&func->list);
+            module_put(func->module);
             kfree(func);
             --faulty.functions.num;
 
@@ -400,10 +406,10 @@ static int __init faulty_init(void)
     INIT_LIST_HEAD(&faulty.functions.list);
     init_rwsem(&faulty.functions.rw_sem);
 
-    faulty_register("branch through zero", faulty_branch_through_zero);
-    faulty_register("null dereference", faulty_null_dereference);
-    faulty_register("div by zero", faulty_div_by_zero);
-    faulty_register("printk storm", faulty_printk_storm);
+    faulty_register(THIS_MODULE, "branch through zero", faulty_branch_through_zero);
+    faulty_register(THIS_MODULE, "null dereference", faulty_null_dereference);
+    faulty_register(THIS_MODULE, "div by zero", faulty_div_by_zero);
+    faulty_register(THIS_MODULE, "printk storm", faulty_printk_storm);
 
     faulty_debugfs_init(&faulty);
     faulty_proc_init(&faulty);

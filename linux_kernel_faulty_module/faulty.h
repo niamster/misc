@@ -20,6 +20,6 @@ void faulty_printk_storm(void);
 
 typedef void (* faulty_funct_t)(void);
 
-int faulty_register(const char *name, faulty_funct_t faulty);
+int faulty_register(struct module *module, const char *name, faulty_funct_t faulty);
 int faulty_unregister(const char *name);
 int faulty_unregister_all(void);
