@@ -83,7 +83,7 @@ int faulty_register(struct module *module, const char *name, faulty_funct_t f)
     struct faulty_func *func;
     unsigned int name_len = strlen(name) + 1;
 
-    if (!try_module_get(module))
+	if (module != THIS_MODULE && !try_module_get(module))
         return -ENOSYS;
 
     func = kmalloc(sizeof(struct faulty_func) + name_len,
@@ -91,7 +91,7 @@ int faulty_register(struct module *module, const char *name, faulty_funct_t f)
     if (!func)
         return -ENOMEM;
 
-    func->module = module;
+    func->module = module==THIS_MODULE?NULL:module;
     func->name = (char *)(func + 1);
     memcpy(func->name, name, name_len);
     func->f = f;
@@ -122,7 +122,8 @@ int faulty_unregister(const char *name)
             }
 
             list_del(&func->list);
-            module_put(func->module);
+			if (func->module)
+                module_put(func->module);
             kfree(func);
             --faulty.functions.num;
 
