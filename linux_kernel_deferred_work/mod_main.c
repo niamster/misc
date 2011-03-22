@@ -183,6 +183,7 @@ static void deferred_sleep(void)
 
 static void deferred_delay(void)
 {
+    /* These do not sleep */
     ndelay(100);
     udelay(100);
     mdelay(100);
@@ -197,13 +198,13 @@ static int deferred_wake_function(wait_queue_t *wait,
 	if (!test_bit(DEFERRED_WAIT_BIT, &deferred.flags))
 		return 0;
 
-	return autoremove_wake_function(wait, mode, sync, key);
+	return autoremove_wake_function(wait, mode, sync, key); /* This internally will call wake_up */
 }
 
 static void deferred_wait(void)
 {
     DEFINE_WAIT_FUNC(wait, deferred_wake_function);
-    /* DEFINE_WAIT(wait, deferred_wake_function); */
+    /* DEFINE_WAIT(wait); */
     prepare_to_wait(&global_wait_queue, &wait, TASK_INTERRUPTIBLE);
     /* prepare_to_wait_exclusive(&global_wait_queue, &wait, TASK_INTERRUPTIBLE); */
     DBG(1, KERN_DEBUG, "waiting for event #0\n");
@@ -444,7 +445,7 @@ static void deferred_queue_delayed_work(void)
         DBG(2, KERN_DEBUG, "Delayed work is pending\n");
     } else {
         schedule_delayed_work(&global_delayed_work, HZ);
-        /* schedule_delayed_work_on(cpu, &global_delayed_work); */
+        /* schedule_delayed_work_on(cpu, &global_delayed_work, HZ); */
     }
 }
 
