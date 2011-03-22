@@ -161,10 +161,10 @@ static void deferred_sleep(void)
 
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, jiffies_64);
     j = jiffies + HZ;           /* 1 sec later */
-    while (time_after(jiffies, j))
-    /* while (time_before(j, jiffies)) */
-    /* while (time_after_eq(jiffies, j)) */
-    /* while (time_before_eq(j, jiffies)) */
+    while (time_after(j, jiffies))
+    /* while (time_before(jiffies, j)) */
+    /* while (time_after_eq(j, jiffies)) */
+    /* while (time_before_eq(jiffies, j)) */
         schedule();
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, get_jiffies_64());
 
