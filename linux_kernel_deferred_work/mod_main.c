@@ -161,6 +161,7 @@ static void deferred_sleep(void)
 
     printk("32-bit jiffies %lu, 64-bit jiffies %llu\n", jiffies, jiffies_64);
     j = jiffies + HZ;           /* 1 sec later */
+    /* assuming that have TASK_RUNNING */
     while (time_after(j, jiffies))
     /* while (time_before(jiffies, j)) */
     /* while (time_after_eq(j, jiffies)) */
