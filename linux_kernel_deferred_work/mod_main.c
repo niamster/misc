@@ -198,21 +198,35 @@ static int deferred_wake_function(wait_queue_t *wait,
 	if (!test_bit(DEFERRED_WAIT_BIT, &deferred.flags))
 		return 0;
 
-	return autoremove_wake_function(wait, mode, sync, key); /* This internally will call wake_up */
+	return autoremove_wake_function(wait, mode, sync, key); /* This internally will wake up the sleeping process */
 }
 
 static void deferred_wait(void)
 {
-    DEFINE_WAIT_FUNC(wait, deferred_wake_function);
-    /* DEFINE_WAIT(wait); */
-    prepare_to_wait(&global_wait_queue, &wait, TASK_INTERRUPTIBLE);
-    /* prepare_to_wait_exclusive(&global_wait_queue, &wait, TASK_INTERRUPTIBLE); */
-    DBG(1, KERN_DEBUG, "waiting for event #0\n");
-    schedule();
-    finish_wait(&global_wait_queue, &wait);
-    clear_bit(DEFERRED_WAIT_BIT, &deferred.flags);
+    {
+        DEFINE_WAIT_FUNC(wait, deferred_wake_function);
+        /* DEFINE_WAIT(wait); */
+        prepare_to_wait(&global_wait_queue, &wait, TASK_INTERRUPTIBLE);
+        /* prepare_to_wait_exclusive(&global_wait_queue, &wait, TASK_INTERRUPTIBLE); */
+        DBG(1, KERN_DEBUG, "waiting for event #0\n");
+        schedule();
+        finish_wait(&global_wait_queue, &wait);
+        clear_bit(DEFERRED_WAIT_BIT, &deferred.flags);
+    }
 
-    DBG(1, KERN_DEBUG, "waiting for event #1\n");
+    {
+        DECLARE_WAITQUEUE(wait, current);
+        add_wait_queue(&global_wait_queue, &wait);
+        DBG(1, KERN_DEBUG, "waiting for event #1\n");
+        while (!test_bit(DEFERRED_WAIT_BIT, &deferred.flags)) {
+            set_current_state(TASK_INTERRUPTIBLE);
+            schedule();
+        }
+        set_current_state(TASK_RUNNING);
+        remove_wait_queue(&global_wait_queue, &wait);
+    }
+
+    DBG(1, KERN_DEBUG, "waiting for event #2\n");
     wait_event(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, &deferred.flags));
     clear_bit(DEFERRED_WAIT_BIT, &deferred.flags);
     /* wait_event_interruptible(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags)); */
@@ -220,6 +234,7 @@ static void deferred_wait(void)
     /* wait_event_timeout(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags), jiffies + HZ); */
     /* wait_event_interruptible_timeout(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags), jiffies + HZ); */
     /* wait_event_interruptible_exclusive(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags)); */
+
 }
 
 static void deferred_wake(void)
