@@ -249,13 +249,13 @@ static void deferred_timer(void)
 
         mod_timer_pending(&global_timer, jiffies + HZ);
     } else {
-        deferred.timer.expires = jiffies + HZ;
-        add_timer(&deferred.timer);
-        /* mod_timer(&global_timer, jiffies + 3*HZ); */
+        global_timer.expires = jiffies + HZ;
+        add_timer(&global_timer);
+        /* add_timer_on(&global_timer, cpu); */
+        /* mod_timer(&global_timer, jiffies + HZ); */
     }
 
-    mod_timer(&deferred.timer, jiffies + 3*HZ);
-    /* add_timer_on(&deferred.timer, cpu); */
+    mod_timer(&deferred.timer, jiffies + HZ);
 }
 
 static void deferred_tasklet_function(unsigned long data)
