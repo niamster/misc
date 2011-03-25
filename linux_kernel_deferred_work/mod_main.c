@@ -52,9 +52,9 @@ module_param(debug_level, uint, S_IRUGO|S_IWUSR);
 #define DBG(...)
 #endif
 
-#define DEFERRED_WAIT_BIT       0
-#define DEFERRED_THREAD_BIT     1
-#define DEFERRED_THREAD_JOB_BIT 2
+#define DEFERRED_WAIT_EVENT_BIT     0
+#define DEFERRED_THREAD_RUNNING_BIT 1
+#define DEFERRED_THREAD_JOB_BIT     2
 
 struct deferred {
     struct proc_dir_entry *proc_dir;
@@ -78,6 +78,7 @@ static void deferred_global_delayed_work_function(struct work_struct *work);
 
 static struct deferred deferred = {
     .timer = TIMER_INITIALIZER(deferred_timer_function, 0, 0),
+    .thread = NULL,
 };
 
 static DECLARE_WAIT_QUEUE_HEAD(global_wait_queue);
@@ -195,7 +196,7 @@ static int deferred_wake_function(wait_queue_t *wait,
 	/*
 	 * Avoid a wakeup if event not interesting for us
 	 */
-	if (!test_bit(DEFERRED_WAIT_BIT, &deferred.flags))
+	if (!test_bit(DEFERRED_WAIT_EVENT_BIT, &deferred.flags))
 		return 0;
 
 	return autoremove_wake_function(wait, mode, sync, key); /* This internally will wake up the sleeping process */
@@ -211,14 +212,14 @@ static void deferred_wait(void)
         DBG(1, KERN_DEBUG, "waiting for event #0\n");
         schedule();
         finish_wait(&global_wait_queue, &wait);
-        clear_bit(DEFERRED_WAIT_BIT, &deferred.flags);
+        clear_bit(DEFERRED_WAIT_EVENT_BIT, &deferred.flags);
     }
 
     {
         DECLARE_WAITQUEUE(wait, current);
         add_wait_queue(&global_wait_queue, &wait);
         DBG(1, KERN_DEBUG, "waiting for event #1\n");
-        while (!test_bit(DEFERRED_WAIT_BIT, &deferred.flags)) {
+        while (!test_bit(DEFERRED_WAIT_EVENT_BIT, &deferred.flags)) {
             set_current_state(TASK_INTERRUPTIBLE);
             schedule();
         }
@@ -227,20 +228,20 @@ static void deferred_wait(void)
     }
 
     DBG(1, KERN_DEBUG, "waiting for event #2\n");
-    wait_event(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, &deferred.flags));
-    clear_bit(DEFERRED_WAIT_BIT, &deferred.flags);
-    /* wait_event_interruptible(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags)); */
-    /* wait_event_killable(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags)); */
-    /* wait_event_timeout(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags), jiffies + HZ); */
-    /* wait_event_interruptible_timeout(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags), jiffies + HZ); */
-    /* wait_event_interruptible_exclusive(global_wait_queue, test_bit(DEFERRED_WAIT_BIT, deferred.flags)); */
+    wait_event(global_wait_queue, test_bit(DEFERRED_WAIT_EVENT_BIT, &deferred.flags));
+    clear_bit(DEFERRED_WAIT_EVENT_BIT, &deferred.flags);
+    /* wait_event_interruptible(global_wait_queue, test_bit(DEFERRED_WAIT_EVENT_BIT, deferred.flags)); */
+    /* wait_event_killable(global_wait_queue, test_bit(DEFERRED_WAIT_EVENT_BIT, deferred.flags)); */
+    /* wait_event_timeout(global_wait_queue, test_bit(DEFERRED_WAIT_EVENT_BIT, deferred.flags), jiffies + HZ); */
+    /* wait_event_interruptible_timeout(global_wait_queue, test_bit(DEFERRED_WAIT_EVENT_BIT, deferred.flags), jiffies + HZ); */
+    /* wait_event_interruptible_exclusive(global_wait_queue, test_bit(DEFERRED_WAIT_EVENT_BIT, deferred.flags)); */
 
 }
 
 static void deferred_wake(void)
 {
     DBG(1, KERN_DEBUG, "waking up\n");
-    set_bit(DEFERRED_WAIT_BIT, &deferred.flags);
+    set_bit(DEFERRED_WAIT_EVENT_BIT, &deferred.flags);
     wake_up(&global_wait_queue);
     /* wake_up_nr(&global_wait_queue, 1); */
     /* wake_up_all(&global_wait_queue); */
@@ -298,6 +299,8 @@ static void deferred_tasklet_disable(void)
 
 static int deferred_thread_function(void *data)
 {
+    int ret = 0;
+
     DBG(2, KERN_DEBUG, "New thread started: pid %d, comm %s\n",
             current->pid, current->comm);
 
@@ -310,14 +313,27 @@ static int deferred_thread_function(void *data)
 	/* Allow the thread to be frozen */
 	set_freezable();
 
+	/* Arrange for userspace references to be interpreted as kernel
+	 * pointers.  That way we can pass a kernel pointer to a routine
+	 * that expects a __user pointer and it will work okay. */
+	set_fs(get_ds());
+
     for (;;) {
         set_current_state(TASK_INTERRUPTIBLE);
+        /* If the task was preempted the scheduler know that
+           so it will run the task again(sooner or later)
+           If this is not true for your scheduler kick it off
+        */
 
-        if (kthread_should_stop())
-            return 0;
+        if (kthread_should_stop()) {
+            DBG(0, KERN_INFO, "Asked to exit\n");
+            goto out;
+        }
 
-        if (try_to_freeze())
+        if (try_to_freeze()) {
+            DBG(0, KERN_INFO, "Asked to freeze\n");
             continue;
+        }
 
 		if (signal_pending(current)) {
             siginfo_t info;
@@ -328,14 +344,12 @@ static int deferred_thread_function(void *data)
 
             flush_signals(current);
 
-            clear_bit(DEFERRED_THREAD_BIT, &deferred.flags);
-
-			return -1;
+			ret = -EINTR;
+            goto out;
 		}
 
         if (test_bit(DEFERRED_THREAD_JOB_BIT, &deferred.flags)) {
             __set_current_state(TASK_RUNNING);
-
             DBG(0, KERN_INFO, "Doing interesting job\n");
             clear_bit(DEFERRED_THREAD_JOB_BIT, &deferred.flags);
 
@@ -345,52 +359,64 @@ static int deferred_thread_function(void *data)
         schedule();
     }
 
-    return 0;
+  out:
+    clear_bit(DEFERRED_THREAD_RUNNING_BIT, &deferred.flags);
+
+    return ret;
 }
 
 static void deferred_thread_start(void)
 {
-    if (test_bit(DEFERRED_THREAD_BIT, &deferred.flags))
+    struct task_struct *thread;
+
+    if (test_bit(DEFERRED_THREAD_RUNNING_BIT, &deferred.flags))
         return;
 
-    set_bit(DEFERRED_THREAD_BIT, &deferred.flags);
+    set_bit(DEFERRED_THREAD_RUNNING_BIT, &deferred.flags);
 
-    deferred.thread = kthread_create(deferred_thread_function, NULL, "deferred");
-    if (IS_ERR(deferred.thread)) {
+    thread = kthread_create(deferred_thread_function, NULL, "deferred");
+    if (IS_ERR(thread)) {
         DBG(0, KERN_ERR, "Unable to create new thread: %ld\n", PTR_ERR(deferred.thread));
-        clear_bit(DEFERRED_THREAD_BIT, &deferred.flags);
+        clear_bit(DEFERRED_THREAD_RUNNING_BIT, &deferred.flags);
         return;
     }
 
     /* kthread_bind(deferred.thread, cpu); */
     DBG(1, KERN_INFO, "Starting new thread\n");
-    wake_up_process(deferred.thread);
+    wake_up_process(thread);
     DBG(2, KERN_DEBUG, "New thread started\n");
 
-    /* deferred.thread = kthread_run(deferred_thread_function, NULL, "deferred"); */
+    /* thread = kthread_run(deferred_thread_function, NULL, "deferred"); */
     /* if (IS_ERR(deferred.thread)) { */
     /*     DBG(0, KERN_ERR, "Unable to create new thread: %ld\n", PTR_ERR(deferred.thread)); */
-    /*     clear_bit(DEFERRED_THREAD_BIT, &deferred.flags); */
+    /*     clear_bit(DEFERRED_THREAD_RUNNING_BIT, &deferred.flags); */
     /*     return; */
     /* } */
+
+    deferred.thread = thread;
 }
 
 static void deferred_thread_stop(void)
 {
     int ret;
 
-    if (!test_bit(DEFERRED_THREAD_BIT, &deferred.flags))
+    if (!test_bit(DEFERRED_THREAD_RUNNING_BIT, &deferred.flags)
+            || !deferred.thread)
         return;
+
+    clear_bit(DEFERRED_THREAD_RUNNING_BIT, &deferred.flags);
 
     DBG(2, KERN_DEBUG, "Stopping the thread\n");
     ret = kthread_stop(deferred.thread);
-    clear_bit(DEFERRED_THREAD_BIT, &deferred.flags);
     DBG(1, KERN_INFO, "The thread stopped: %d\n", ret);
+
+    deferred.thread = NULL;
 }
 
 static void deferred_thread_wakeup(void)
 {
-    if (!test_bit(DEFERRED_THREAD_BIT, &deferred.flags))
+    if (!test_bit(DEFERRED_THREAD_RUNNING_BIT, &deferred.flags)
+            || !deferred.thread)
         return;
 
     set_bit(DEFERRED_THREAD_JOB_BIT, &deferred.flags);
@@ -609,12 +635,12 @@ static void __exit deferred_proc_deinit(struct deferred *deferred)
     }
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
-static void deferred_init_work_function(struct work_struct *work)
-{
-    printk("Delayed init work done on cpu %d\n", raw_smp_processor_id());
-}
-#endif
+/* #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32) */
+/* static void deferred_init_work_function(struct work_struct *work) */
+/* { */
+/*     printk("Delayed init work done on cpu %d\n", raw_smp_processor_id()); */
+/* } */
+/* #endif */
 
 /*
  * This function is called at module load.
@@ -645,9 +671,9 @@ static int __init deferred_init(void)
     INIT_WORK(&deferred.work, deferred_work_function);
     INIT_DELAYED_WORK(&deferred.delayed_work, deferred_delayed_work_function);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
-    schedule_on_each_cpu(deferred_init_work_function);
-#endif
+/* #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32) */
+/*     schedule_on_each_cpu(deferred_init_work_function); */
+/* #endif */
 
     deferred_proc_init(&deferred);
 
