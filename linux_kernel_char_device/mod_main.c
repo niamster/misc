@@ -84,7 +84,7 @@ static int chardev_release(struct inode *inode, struct file *file)
 }
 
 static ssize_t chardev_read(struct file *file, char __user *buf,
-		size_t count, loff_t *loff)
+		size_t count, loff_t *ppos)
 {
     struct circ_buf *cbuffer = file->private_data;
     int cnt, i;
@@ -100,20 +100,17 @@ static ssize_t chardev_read(struct file *file, char __user *buf,
 
     cnt = circ_cnt(cbuffer);
 
-	if (*loff >= cnt)
-		goto out;
-
-	if (*loff + count > cnt)
-		count = cnt - *loff;
+	if (count > cnt)
+		count = cnt;
 
     kbuf = kzalloc(count, GFP_KERNEL);
     if (!kbuf) {
-        DBG(0, KERN_ERR, "unable to allocate %d bytes\n", count);
+        DBG(0, KERN_ERR, "unable to allocate %zu bytes\n", count);
         res = -ENOMEM;
         goto out;
     }
 
-	for (i=*loff;i<count;++i)
+	for (i=0;i<count;++i)
 		kbuf[i] = circ_byte(cbuffer, cbuffer->tail + i);
 
 	if (copy_to_user(buf, kbuf, count) != 0) {
@@ -123,10 +120,9 @@ static ssize_t chardev_read(struct file *file, char __user *buf,
     }
 
     cbuffer->tail += count;
-	*loff += count;
 
-    DBG(2, KERN_DEBUG, "read %d bytes\n", count);
-    DBG(2, KERN_DEBUG, "head: %d tail: %d\n", cbuffer->head, cbuffer->tail);
+    DBG(2, KERN_DEBUG, "read %zu bytes\n", count);
+    DBG(2, KERN_DEBUG, "head: %u tail: %u\n", cbuffer->head, cbuffer->tail);
 
 	res = count;
 
@@ -139,7 +135,7 @@ static ssize_t chardev_read(struct file *file, char __user *buf,
 }
 
 static ssize_t chardev_write(struct file *file, const char __user *buf,
-		size_t count, loff_t *loff)
+		size_t count, loff_t *ppos)
 {
     struct circ_buf *cbuffer = file->private_data;
     int free, i;
@@ -151,16 +147,15 @@ static ssize_t chardev_write(struct file *file, const char __user *buf,
     mutex_lock(&file->f_path.dentry->d_inode->i_mutex);
 
     free = circ_free(cbuffer);
+    if (!free)
+        goto out;
 
-	if (*loff >= free)
-		goto out;
-
-	if (*loff + count > free)
-		count = free - *loff;
-
+	if (count > free)
+		count = free;
+    
     kbuf = kzalloc(count+1, GFP_KERNEL);
     if (!kbuf) {
-        DBG(0, KERN_ERR, "unable to allocate %d bytes\n", count);
+        DBG(0, KERN_ERR, "unable to allocate %zu bytes\n", count);
         res = -ENOMEM;
         goto out;
     }
@@ -171,14 +166,13 @@ static ssize_t chardev_write(struct file *file, const char __user *buf,
         goto out_free_kbuf;
     }
 
-	for (i=*loff;i<count;++i)
+	for (i=0;i<count;++i)
 		circ_byte(cbuffer, cbuffer->head + i) = kbuf[i];
 
     cbuffer->head += count;
-	*loff += count;
 
-    DBG(2, KERN_DEBUG, "written %d bytes\n", count);
-    DBG(2, KERN_DEBUG, "head: %d tail: %d\n", cbuffer->head, cbuffer->tail);
+    DBG(2, KERN_DEBUG, "written %zu bytes\n", count);
+    DBG(2, KERN_DEBUG, "head: %u tail: %u\n", cbuffer->head, cbuffer->tail);
 
     res = count;
 
